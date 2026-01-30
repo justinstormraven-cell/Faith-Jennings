@@ -1,0 +1,7 @@
+{
+  "name": "faith",
+  "description": "Conversational interface using Google GenAI SDK",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
