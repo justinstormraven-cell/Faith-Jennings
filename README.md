@@ -12,9 +12,14 @@ View your app in AI Studio: https://ai.studio/apps/drive/1_aNlEKNlZcK8m-Tc-Dij4Z
 
 **Prerequisites:**  Node.js
 
+**Development requirements:**
+- Node >= 16
+- TypeScript ~5.3.0 (see note below)
 
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+> Note: This repository pins TypeScript to `~5.3.0` to remain compatible with the project ESLint tooling (see PRs #2 and #3 for context).
