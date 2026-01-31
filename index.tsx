@@ -21,6 +21,7 @@ const PERSONAS: Record<string, string> = {
 const PERSONA_DISPLAY_NAMES: Record<string, string> = {
   "default": "Assistant",
   "coder": "Coder",
+  "fixer": "Project Fixer",
   "storyteller": "Storyteller",
   "concise": "Concise",
   "custom": "Custom"
@@ -107,10 +108,19 @@ app.innerHTML = `
       <p class="modal-desc">Fine-tune the behavior and constraints for your AI instance.</p>
       
       <div class="input-group">
+        <label for="model-select">Gemini Model</label>
+        <select id="model-select">
+          <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast)</option>
+          <option value="gemini-1.5-pro">Gemini 1.5 Pro (Reasoning)</option>
+        </select>
+      </div>
+
+      <div class="input-group">
         <label for="persona-select">Persona Template</label>
         <select id="persona-select">
           <option value="default">Default (Helpful Assistant)</option>
           <option value="coder">Expert Coder</option>
+          <option value="fixer">Project Fixer</option>
           <option value="storyteller">Creative Storyteller</option>
           <option value="concise">Concise Responder</option>
           <option value="custom">Custom Configuration</option>
