@@ -9,12 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "marked": "^15.0.8",
-    "@google/genai": "latest"
+    "@google/genai": "latest",
+    "marked": "^15.0.8"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
-    
+    "@typescript-eslint/eslint-plugin": "^8.54.0",
+    "@typescript-eslint/parser": "^8.54.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }
