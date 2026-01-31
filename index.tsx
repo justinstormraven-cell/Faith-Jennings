@@ -94,9 +94,20 @@ app.innerHTML = `
     <div id="chat-history"></div>
   </div>
   <form id="input-area">
-    <input type="text" id="user-input" placeholder="Type a message..." autocomplete="off" />
+    <div class="input-wrapper" style="display: flex; width: 100%; align-items: center; gap: 8px;">
+      <button type="button" id="attach-btn" class="icon-btn" title="Attach file" style="background: none; border: none; cursor: pointer; color: inherit;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
+      </button>
+      <input type="file" id="chat-file-input" class="hidden" />
+      <input type="text" id="user-input" placeholder="Type a message..." autocomplete="off" style="flex-grow: 1;" />
+    </div>
     <button type="submit" id="send-btn">Send</button>
+    <button type="button" id="stop-btn" class="hidden">Stop</button>
   </form>
+  <div id="attachment-preview" class="hidden" style="padding: 0 1rem; font-size: 0.85rem; color: #666; margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+    <span id="attachment-name"></span>
+    <button type="button" id="remove-attachment" style="background: none; border: none; cursor: pointer; color: inherit;">&times;</button>
+  </div>
 
   <!-- Settings Modal -->
   <div id="settings-modal" class="modal hidden">
@@ -175,7 +186,13 @@ const chatHistoryEl = document.getElementById('chat-history')!;
 const systemBannerContainer = document.getElementById('system-banner-container')!;
 const inputForm = document.getElementById('input-area') as HTMLFormElement;
 const userInput = document.getElementById('user-input') as HTMLInputElement;
+const attachBtn = document.getElementById('attach-btn') as HTMLButtonElement;
+const chatFileInput = document.getElementById('chat-file-input') as HTMLInputElement;
+const attachmentPreview = document.getElementById('attachment-preview') as HTMLDivElement;
+const attachmentName = document.getElementById('attachment-name') as HTMLSpanElement;
+const removeAttachmentBtn = document.getElementById('remove-attachment') as HTMLButtonElement;
 const sendBtn = document.getElementById('send-btn') as HTMLButtonElement;
+const stopBtn = document.getElementById('stop-btn') as HTMLButtonElement;
 const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
 const settingsBtn = document.getElementById('settings-btn') as HTMLButtonElement;
 const settingsModal = document.getElementById('settings-modal') as HTMLDivElement;
@@ -238,6 +255,7 @@ function openSettings() {
 clearBtn.addEventListener('click', () => {
   if (confirm("Clear conversation history?")) {
     chatHistoryEl.innerHTML = '';
+    localStorage.removeItem('gemini_chat_history');
     initChat();
   }
 });
@@ -346,7 +364,7 @@ settingsModal.addEventListener('click', (e) => {
 // Vibe Check - Image to Persona Logic
 vibeCheckBtn.addEventListener('click', () => vibeImageInput.click());
 
-vibeImageInput.addEventListener('change', async (e) => {
+vibeImageInput.addEventListener('change', async (_e) => {
   const file = vibeImageInput.files?.[0];
   if (!file) return;
 
@@ -428,37 +446,110 @@ async function appendMessage(role: 'user' | 'model', text: string): Promise<HTML
   return msgBubble;
 }
 
+function updateHistory(role: 'user' | 'model', text: string) {
+  const history = JSON.parse(localStorage.getItem('gemini_chat_history') || '[]');
+  history.push({ role, text });
+  localStorage.setItem('gemini_chat_history', JSON.stringify(history));
+}
+
+attachBtn.addEventListener('click', () => chatFileInput.click());
+
+chatFileInput.addEventListener('change', () => {
+  const file = chatFileInput.files?.[0];
+  if (file) {
+    attachmentName.textContent = file.name;
+    attachmentPreview.classList.remove('hidden');
+  } else {
+    attachmentPreview.classList.add('hidden');
+  }
+});
+
+removeAttachmentBtn.addEventListener('click', () => {
+  chatFileInput.value = '';
+  attachmentPreview.classList.add('hidden');
+});
+
+stopBtn.addEventListener('click', () => {
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
+  }
+});
+
 inputForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = userInput.value.trim();
-  if (!text) return;
+  const file = chatFileInput.files?.[0];
+  
+  if (!text && !file) return;
 
   userInput.value = '';
   userInput.disabled = true;
-  sendBtn.disabled = true;
+  sendBtn.classList.add('hidden');
+  stopBtn.classList.remove('hidden');
+  attachmentPreview.classList.add('hidden');
+  
+  abortController = new AbortController();
 
-  await appendMessage('user', text);
+  const displayMsg = text + (file ? `\n_[Attached: ${file.name}]_` : '');
+  await appendMessage('user', displayMsg);
+  updateHistory('user', displayMsg);
 
   try {
     const modelMsgBubble = await appendMessage('model', '...');
     let fullResponse = '';
 
-    const result = await chat.sendMessageStream({ message: text });
+    let parts: any[] = [];
+    if (text) parts.push(text);
     
-    for await (const chunk of result) {
-      const c = chunk as GenerateContentResponse;
-      if (c.text) {
-        fullResponse += c.text;
+    if (file) {
+      const fileData = await new Promise<any>((resolve, reject) => {
+        const reader = new FileReader();
+        if (file.type.startsWith('image/')) {
+          reader.onload = () => resolve({ inlineData: { mimeType: file.type, data: (reader.result as string).split(',')[1] } });
+        } else {
+          reader.onload = () => resolve({ text: `\n\n--- FILE: ${file.name} ---\n${reader.result}\n--- END FILE ---\n` });
+          reader.readAsText(file);
+          return;
+        }
+        reader.readAsDataURL(file);
+        reader.onerror = reject;
+      });
+      parts.push(fileData);
+    }
+
+    const result = await chat.sendMessageStream(parts);
+    
+    for await (const chunk of result.stream) {
+      if (abortController?.signal.aborted) break;
+      const chunkText = chunk.text();
+      if (chunkText) {
+        fullResponse += chunkText;
         modelMsgBubble.innerHTML = await marked.parse(fullResponse);
+        modelMsgBubble.querySelectorAll('pre code').forEach((block) => {
+          hljs.highlightElement(block as HTMLElement);
+        });
         chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
       }
     }
+    
+    if (abortController?.signal.aborted) {
+      fullResponse += " _(Stopped)_";
+      modelMsgBubble.innerHTML = await marked.parse(fullResponse);
+      modelMsgBubble.querySelectorAll('pre code').forEach((block) => {
+        hljs.highlightElement(block as HTMLElement);
+      });
+    }
+    updateHistory('model', fullResponse);
   } catch (err) {
     console.error(err);
     await appendMessage('model', 'Error connecting to Gemini. Please check your API configuration.');
   } finally {
     userInput.disabled = false;
-    sendBtn.disabled = false;
+    sendBtn.classList.remove('hidden');
+    stopBtn.classList.add('hidden');
     userInput.focus();
+    chatFileInput.value = '';
+    abortController = null;
   }
 });
