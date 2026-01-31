@@ -391,6 +391,9 @@ async function appendMessage(role: 'user' | 'model', text: string): Promise<HTML
   
   if (role === 'model') {
     msgBubble.innerHTML = await marked.parse(text);
+    msgBubble.querySelectorAll('pre code').forEach((block) => {
+      hljs.highlightElement(block as HTMLElement);
+    });
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-btn';
