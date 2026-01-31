@@ -2,16 +2,18 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import { GoogleGenAI, GenerateContentResponse, Chat } from "@google/genai";
+import { GoogleGenerativeAI as GoogleGenAI, ChatSession as Chat } from "@google/generative-ai";
 import { marked } from "marked";
+import hljs from "highlight.js";
 
 // Initialize Gemini API
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const ai = new GoogleGenAI(process.env.API_KEY!);
 let chat: Chat;
 
 const PERSONAS: Record<string, string> = {
   "default": "You are a helpful and knowledgeable AI assistant.",
   "coder": "You are an expert software engineer specialized in TypeScript, Python, and modern web frameworks. You write clean, efficient, and well-documented code.",
+  "fixer": "You are a universal project correction agent. You are capable of analyzing and fixing errors in any type of project, whether it involves code, writing, data, or architecture. You provide comprehensive corrections and explanations.",
   "storyteller": "You are a creative storyteller. You craft engaging narratives with vivid imagery and compelling characters.",
   "concise": "You provide short, direct, and to-the-point answers without unnecessary elaboration."
 };
@@ -26,20 +28,42 @@ const PERSONA_DISPLAY_NAMES: Record<string, string> = {
 
 const DEFAULT_SYSTEM_INSTRUCTION = PERSONAS["default"];
 const DEFAULT_TEMPERATURE = 1;
+const DEFAULT_MODEL = "gemini-1.5-flash";
 
 let currentSystemInstruction = localStorage.getItem('gemini_system_instruction') || DEFAULT_SYSTEM_INSTRUCTION;
 let currentTemperature = parseFloat(localStorage.getItem('gemini_temperature') || String(DEFAULT_TEMPERATURE));
 let customPersonaName = localStorage.getItem('gemini_custom_name') || "My Custom AI";
+let currentModel = localStorage.getItem('gemini_model') || DEFAULT_MODEL;
 
-function initChat() {
-  chat = ai.chats.create({
-    model: 'gemini-3-flash-preview',
-    config: {
-      systemInstruction: currentSystemInstruction,
+// Inject Highlight.js CSS
+const hljsLink = document.createElement('link');
+hljsLink.rel = 'stylesheet';
+hljsLink.href = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css';
+document.head.appendChild(hljsLink);
+
+async function initChat() {
+  const model = ai.getGenerativeModel({
+    model: currentModel,
+    systemInstruction: currentSystemInstruction,
+    generationConfig: {
       temperature: currentTemperature,
     }
   });
+
+  const savedHistory = JSON.parse(localStorage.getItem('gemini_chat_history') || '[]');
+  const history = savedHistory.map((msg: {role: string, text: string}) => ({
+    role: msg.role,
+    parts: [{ text: msg.text }]
+  }));
+
+  chat = model.startChat({ history });
   renderSystemBanner();
+
+  if (chatHistoryEl.childElementCount === 0 && savedHistory.length > 0) {
+    for (const msg of savedHistory) {
+      await appendMessage(msg.role as 'user' | 'model', msg.text);
+    }
+  }
 }
 
 // DOM Elements Initialization
@@ -153,11 +177,13 @@ const instructionInput = document.getElementById('system-instruction-input') as 
 const customNameInput = document.getElementById('custom-persona-name') as HTMLInputElement;
 const customNameGroup = document.getElementById('custom-name-group') as HTMLDivElement;
 const personaSelect = document.getElementById('persona-select') as HTMLSelectElement;
+const modelSelect = document.getElementById('model-select') as HTMLSelectElement;
 const tempInput = document.getElementById('temperature-input') as HTMLInputElement;
 const tempValueDisplay = document.getElementById('temp-value')!;
 const vibeCheckBtn = document.getElementById('vibe-check-btn') as HTMLButtonElement;
 const vibeImageInput = document.getElementById('vibe-image-input') as HTMLInputElement;
 const magicLoader = document.getElementById('magic-loader') as HTMLDivElement;
+let abortController: AbortController | null = null;
 
 function renderSystemBanner() {
   const personaKey = detectPersona(currentSystemInstruction);
@@ -182,6 +208,7 @@ function renderSystemBanner() {
 function openSettings() {
   instructionInput.value = currentSystemInstruction;
   const personaKey = detectPersona(currentSystemInstruction);
+  modelSelect.value = currentModel;
   personaSelect.value = personaKey;
   customNameInput.value = customPersonaName;
   
@@ -263,6 +290,7 @@ closeModalX.addEventListener('click', closeModal);
 resetSettingsBtn.addEventListener('click', () => {
   instructionInput.value = DEFAULT_SYSTEM_INSTRUCTION;
   personaSelect.value = "default";
+  modelSelect.value = DEFAULT_MODEL;
   tempInput.value = String(DEFAULT_TEMPERATURE);
   tempValueDisplay.textContent = String(DEFAULT_TEMPERATURE);
   customNameInput.value = "My Custom AI";
@@ -274,21 +302,27 @@ saveSettingsBtn.addEventListener('click', async () => {
   const newInstruction = instructionInput.value.trim();
   const newTemp = parseFloat(tempInput.value);
   const newName = customNameInput.value.trim() || "My Custom AI";
+  const newModel = modelSelect.value;
   
   currentSystemInstruction = newInstruction;
   currentTemperature = newTemp;
   customPersonaName = newName;
+  currentModel = newModel;
   
   localStorage.setItem('gemini_system_instruction', currentSystemInstruction);
   localStorage.setItem('gemini_temperature', String(currentTemperature));
   localStorage.setItem('gemini_custom_name', customPersonaName);
+  localStorage.setItem('gemini_model', currentModel);
   
   updatePersonaBadge();
   renderSystemBanner();
 
   chatHistoryEl.innerHTML = '';
-  initChat();
-  await appendMessage('model', `_API Configuration Rebuilt. Ready to assist as **${detectPersona(currentSystemInstruction) === 'custom' ? customPersonaName : PERSONA_DISPLAY_NAMES[detectPersona(currentSystemInstruction)]}**._`);
+  localStorage.removeItem('gemini_chat_history');
+  await initChat();
+  const resetMsg = `_API Configuration Rebuilt. Ready to assist as **${detectPersona(currentSystemInstruction) === 'custom' ? customPersonaName : PERSONA_DISPLAY_NAMES[detectPersona(currentSystemInstruction)]}**._`;
+  await appendMessage('model', resetMsg);
+  updateHistory('model', resetMsg);
   
   closeModal();
 });
@@ -315,18 +349,15 @@ vibeImageInput.addEventListener('change', async (e) => {
       
       const prompt = "Look at this image. Based on the person/people, their expressions, style, and surroundings, create a concise system instruction (max 80 words) for an AI to adopt this personality. Focus on their 'vibe', communication style, and probable interests. Start directly with the instruction.";
       
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: {
-          parts: [
-            { inlineData: { mimeType: file.type, data: base64Data } },
-            { text: prompt }
-          ]
-        }
-      });
+      const model = ai.getGenerativeModel({ model: currentModel });
+      const result = await model.generateContent([
+        { inlineData: { mimeType: file.type, data: base64Data } },
+        prompt
+      ]);
+      const responseText = result.response.text();
 
-      if (response.text) {
-        instructionInput.value = response.text.trim();
+      if (responseText) {
+        instructionInput.value = responseText.trim();
         personaSelect.value = 'custom';
         customNameGroup.classList.remove('hidden');
         customNameInput.value = "Vibe AI";
